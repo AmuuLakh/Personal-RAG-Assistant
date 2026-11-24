@@ -1,4 +1,5 @@
 import os
+import time
 from pypdf import PdfReader
 import chromadb
 from google import genai
@@ -29,7 +30,7 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> list[str
 
 
 def get_embedding(text: str) -> list[float]:
-    """Converts a string of text into a numerical vector using Gemini."""
+    """Converts a single string of text into a vector (used for user questions)."""
     result = client.models.embed_content(
         model="gemini-embedding-001",
         contents=text,
@@ -37,10 +38,32 @@ def get_embedding(text: str) -> list[float]:
     return result.embeddings[0].values
 
 
-def ingest_pdf(file_path: str, filename: str) -> int:
-    """Reads a PDF page by page, chunks it, embeds it, and stores it in ChromaDB."""
+def get_embeddings_batch(texts: list[str], max_retries: int = 5) -> list[list[float]]:
+    """Embeds a batch of chunks with automatic retry if the free-tier TPM limit is hit."""
+    for attempt in range(max_retries):
+        try:
+            result = client.models.embed_content(
+                model="gemini-embedding-001",
+                contents=texts,
+            )
+            return [emb.values for emb in result.embeddings]
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                wait_seconds = 15 * (attempt + 1)
+                print(f"[Rate Limit] 30k TPM cap reached. Waiting {wait_seconds}s before retrying...")
+                time.sleep(wait_seconds)
+            else:
+                raise e
+    raise RuntimeError("Exceeded max retries due to Gemini free-tier rate limits.")
+
+
+def ingest_pdf(file_path: str, filename: str, batch_size: int = 25) -> int:
+    """Reads a PDF, skips already-indexed chunks, and embeds within the 30k tokens/min free limit."""
     reader = PdfReader(file_path)
-    total_chunks = 0
+
+    all_ids = []
+    all_docs = []
+    all_metas = []
 
     for page_num, page in enumerate(reader.pages, start=1):
         raw_text = page.extract_text() or ""
@@ -48,24 +71,50 @@ def ingest_pdf(file_path: str, filename: str) -> int:
             continue
 
         chunks = chunk_text(raw_text)
-
         for idx, chunk in enumerate(chunks):
-            chunk_id = f"{filename}_p{page_num}_c{idx}"
-            embedding = get_embedding(chunk)
+            all_ids.append(f"{filename}_p{page_num}_c{idx}")
+            all_docs.append(chunk)
+            all_metas.append({"source": filename, "page": page_num})
 
-            collection.upsert(
-                ids=[chunk_id],
-                embeddings=[embedding],
-                documents=[chunk],
-                metadatas=[{"source": filename, "page": page_num}],
-            )
-            total_chunks += 1
+    if not all_docs:
+        raise ValueError("No readable text found in this PDF (it might be a scanned image PDF).")
 
-    return total_chunks
+    # Check which chunk IDs are already stored so we never waste tokens re-embedding them
+    existing = set(collection.get(ids=all_ids)["ids"])
+    new_ids, new_docs, new_metas = [], [], []
+    for cid, doc, meta in zip(all_ids, all_docs, all_metas):
+        if cid not in existing:
+            new_ids.append(cid)
+            new_docs.append(doc)
+            new_metas.append(meta)
+
+    if not new_docs:
+        return len(all_docs)
+
+    # Process in 25-chunk batches (~5,000 tokens each) with pacing to stay under 30k tokens/min
+    for i in range(0, len(new_docs), batch_size):
+        batch_ids = new_ids[i : i + batch_size]
+        batch_docs = new_docs[i : i + batch_size]
+        batch_metas = new_metas[i : i + batch_size]
+
+        batch_embeddings = get_embeddings_batch(batch_docs)
+
+        collection.upsert(
+            ids=batch_ids,
+            embeddings=batch_embeddings,
+            documents=batch_docs,
+            metadatas=batch_metas,
+        )
+
+        # Pace at ~12 seconds per 5k-token batch (~25k tokens/min) so we stay safely under 30k TPM
+        if i + batch_size < len(new_docs):
+            time.sleep(12.0)
+
+    return len(all_docs)
 
 
 def ask_question(question: str, top_k: int = 4) -> dict:
-    """Finds the top_k most relevant chunks and generates a cited answer."""
+    """Finds the top_k most relevant chunks and generates a cited answer with model fallback."""
     if collection.count() == 0:
         return {
             "answer": "Your knowledge base is empty! Upload a syllabus, lecture slide deck, or PDF note first.",
@@ -102,7 +151,7 @@ def ask_question(question: str, top_k: int = 4) -> dict:
 
     formatted_context = "\n\n---\n\n".join(context_blocks)
 
-    # 4. Grounded Generation Prompt
+    # 4. Grounded Generation Prompt with automatic fallback across Gemini models
     system_instruction = (
         "You are an AI Study Assistant for a university student. "
         "Answer the student's question using ONLY the provided course material excerpts. "
@@ -113,19 +162,32 @@ def ask_question(question: str, top_k: int = 4) -> dict:
 
     prompt = f"COURSE MATERIAL EXCERPTS:\n{formatted_context}\n\nSTUDENT QUESTION:\n{question}"
 
-    response = client.models.generate_content(
-        model="gemini-3.5-flash-lite",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            temperature=0.2,  # Low temperature keeps answers factual and grounded
-        ),
-    )
+    fallback_models = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-4-hydrogen"]
+    last_error = None
 
-    return {
-        "answer": response.text,
-        "citations": citations,
-    }
+    for model_name in fallback_models:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.2,
+                ),
+            )
+            return {
+                "answer": response.text,
+                "citations": citations,
+            }
+        except Exception as e:
+            last_error = e
+            if "503" in str(e) or "UNAVAILABLE" in str(e) or "429" in str(e):
+                print(f"[Model Fallback] {model_name} busy, switching to next model...")
+                time.sleep(1.5)
+                continue
+            raise e
+
+    raise RuntimeError(f"All Gemini models are temporarily busy. Last error: {last_error}")
 
 
 def list_uploaded_sources() -> list[str]:

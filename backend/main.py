@@ -43,7 +43,11 @@ async def upload_document(file: UploadFile = File(...)):
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    chunks_created = ingest_pdf(file_path, file.filename)
+    try:
+        chunks_created = ingest_pdf(file_path, file.filename)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
+
     return {
         "filename": file.filename,
         "chunks_indexed": chunks_created,
