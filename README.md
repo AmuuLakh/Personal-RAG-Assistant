@@ -1,142 +1,358 @@
 # 🎓 Personal RAG Assistant
 
-> **Status:** ✅ Complete & Running Locally (Multi-Session Chat Memory + Per-Chat Vector Isolation)
+<p align="center">
+  <strong>An AI-powered study companion that turns your course materials into intelligent, citation-backed study workspaces.</strong>
+</p>
 
-An AI-powered study companion built with **Retrieval-Augmented Generation (RAG)** that turns personal course materials—lecture slides, syllabi, and multi-page textbook PDFs—into isolated, memory-enabled study workspaces with exact page citations.
+<p align="center">
+  <img src="https://img.shields.io/badge/Status-Complete-brightgreen?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Python-3.10+-blue?style=for-the-badge&logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/React-Vite-61DAFB?style=for-the-badge&logo=react&logoColor=black" />
+  <img src="https://img.shields.io/badge/FastAPI-Backend-009688?style=for-the-badge&logo=fastapi&logoColor=white" />
+  <img src="https://img.shields.io/badge/ChromaDB-Vector%20Store-orange?style=for-the-badge" />
+</p>
 
 ---
 
-## 💡 Why I Built This
-Generic AI chatbots frequently hallucinate, mix up context across unrelated subjects, or give outside definitions that contradict what a professor actually teaches in class. I built **Personal RAG Assistant** to solve three real student pain points:
-1. **Strict Grounding & Receipts:** Every answer is synthesized strictly from uploaded course PDFs and includes interactive `[Source X]` citation cards showing the exact filename, page number, and quoted snippet.
-2. **Per-Chat Document Isolation:** Each study session has its own isolated knowledge base—so your *Machine Learning* PDFs never bleed into your *Database Systems* chat.
-3. **Conversational Follow-Up Memory:** Remembers prior turns within a chat session so you can ask natural follow-ups (e.g., *"What are the next steps for that project?"* or *"Explain that formula simply"*) without repeating context.
+## 📖 Overview
+
+**Personal RAG Assistant** is an AI-powered study tool built using **Retrieval-Augmented Generation (RAG)**. It transforms personal course materials—including lecture slides, syllabi, and multi-page textbook PDFs—into isolated, memory-enabled study workspaces.
+
+Unlike generic AI chatbots, the assistant prioritizes your actual course materials, providing context-aware answers with precise page-level citations.
+
+### ✨ Why I Built This
+
+Generic AI chatbots can hallucinate, mix information across unrelated subjects, or provide external definitions that contradict what a professor teaches.
+
+I built Personal RAG Assistant to address three key problems:
+
+| Problem | Solution |
+|---|---|
+| ❌ AI hallucinations | 📚 Strict grounding in uploaded course PDFs with source citations |
+| ❌ Mixed conversation context | 🔒 Isolated document storage for every chat session |
+| ❌ Forgetful conversations | 🧠 Persistent chat history and context-aware follow-up memory |
+
+---
+
+## 🚀 Key Features
+
+### 📚 1. Strict Grounding & Source Citations
+- Generates answers strictly from uploaded course materials.
+- Provides interactive `[Source X]` citation cards.
+- Displays the exact filename, page number, and quoted source snippet.
+- Makes it easy to verify every answer against the original material.
+
+### 🔒 2. Multi-Session Document Isolation
+- Create separate workspaces for different classes, subjects, or projects.
+- Each chat maintains its own isolated vector knowledge base.
+- ChromaDB metadata filtering ensures documents never bleed across sessions.
+
+### 🧠 3. Conversational Follow-Up Memory
+- Remembers previous messages within each chat session.
+- Injects the last 6 conversation messages into the LLM prompt.
+- Enhances semantic search using recent conversational context.
+- Supports natural follow-ups such as:
+  - "What are the next steps for that project?"
+  - "Can you explain that formula more simply?"
+  - "What was the second method we discussed?"
+
+### ⚡ 4. Optimized PDF Ingestion
+- Page-by-page PDF extraction using `pypdf`.
+- Overlapping text chunking (800 characters).
+- Batch embeddings (25 chunks per request).
+- Automatic exponential backoff for API rate limits.
+- ChromaDB ID deduplication for reliable indexing.
+
+### 🔄 5. Resilient AI Model Fallback
+- Automatically switches between configured Gemini models.
+- Handles temporary API errors and high-demand (503) responses.
+- Improves reliability when a model becomes temporarily unavailable.
+
+### 💾 6. Persistent Local Storage
+- SQLite-powered chat history.
+- Automatically generated chat titles based on uploaded PDFs.
+- Persistent conversation turns and citation metadata.
+- Local PDF storage and vector indexing.
 
 ---
 
 ## 🏗️ System Architecture
 
+The application uses a React frontend, FastAPI backend, ChromaDB vector database, and SQLite conversation storage.
+
 ```text
-┌─────────────────────────┐   1. Upload PDF (chat_id)    ┌──────────────────────────────────────────┐
-│                         │ ───────────────────────────► │  FastAPI Ingestion Pipeline              │
-│   React + Vite          │                              │  • Page-by-page extraction (pypdf)       │
-│   Tailwind CSS UI       │                              │  • Overlapping chunking (800 chars)      │
-│                         │ ◄─────────────────────────── │  • Rate-limited batch embeddings (25/req)│
-│  • Multi-Chat Sidebar   │   5. Cited Answer +          └────────────────────┬─────────────────────┘
-│  • Drag & Drop Upload   │      Source Cards                                 │ 2. Upsert Tagged Vectors
-│  • Citation Inspector   │                                                   ▼
-└───────────┬─────────────┘                              ┌──────────────────────────────────────────┐
-            │                                            │  ChromaDB (Local Vector Store)           │
-            │ 3. Ask Question (chat_id)                  │  • Stores embeddings + metadata:         │
-            ▼                                            │    {chat_id, source, page}               │
-┌─────────────────────────┐   4a. Metadata Filter        │  • Filtered search: where={chat_id}      │
-│   FastAPI Orchestrator  │ ───────────────────────────► └──────────────────────────────────────────┘
-│   (main.py)             │
-│                         │   4b. Read/Write History     ┌──────────────────────────────────────────┐
-│  • Context + History    │ ───────────────────────────► │  SQLite (chat_history.db)                │
-│    Prompt Builder       │                              │  • chats table (id, title, created_at)   │
-│  • Auto Model Fallback  │                              │  • messages table (role, content, cites) │
-└─────────────────────────┘                              └──────────────────────────────────────────┘
+┌─────────────────────────────┐
+│       React + Vite          │
+│       Tailwind CSS          │
+│                             │
+│  • Multi-Chat Sidebar       │
+│  • Drag & Drop PDF Upload   │
+│  • Citation Inspector       │
+└──────────────┬──────────────┘
+               │
+       1. Upload PDF / Ask
+          Question (chat_id)
+               │
+               ▼
+┌─────────────────────────────┐
+│       FastAPI Backend       │
+│                             │
+│  • PDF Ingestion Pipeline   │
+│  • RAG Orchestration        │
+│  • Context + History        │
+│  • Gemini Model Fallback    │
+└───────┬──────────────┬──────┘
+        │              │
+  2. Embeddings    3. Read/Write
+  & Vector Search      History
+        │              │
+        ▼              ▼
+┌───────────────┐  ┌────────────────┐
+│   ChromaDB    │  │     SQLite     │
+│               │  │                │
+│ • Embeddings  │  │ • Chat Sessions│
+│ • PDF Chunks  │  │ • Messages     │
+│ • Metadata    │  │ • Citations    │
+│ • chat_id     │  │ • Timestamps   │
+└───────────────┘  └────────────────┘
+```
+
+### 🔍 Retrieval & Isolation
+
+Every document chunk is tagged with metadata:
+
+```python
+{
+    "chat_id": active_chat_id,
+    "source": filename,
+    "page": page_number
+}
+```
+
+When a user asks a question, ChromaDB applies a session-specific metadata filter:
+
+```python
+where={"chat_id": active_chat_id}
+```
+
+This ensures that retrieval only searches documents belonging to the active conversation.
 
 ---
 
-📁 Project Structure
+## 🛠️ Tech Stack
 
+| Layer | Technologies |
+|---|---|
+| Frontend | React, Vite, Tailwind CSS |
+| Backend | Python, FastAPI |
+| LLM | Google Gemini API |
+| Embeddings | Gemini embedding model |
+| Vector Database | ChromaDB |
+| Relational Database | SQLite |
+| PDF Processing | pypdf |
+| Development | Git, npm, Python virtual environments |
+
+---
+
+## 💡 Engineering Highlights
+
+Some of the most important engineering decisions behind this project:
+
+| Component | Implementation |
+|---|---|
+| **Session Isolation** | Every vector chunk is tagged with a `chat_id` and retrieved using metadata filtering. |
+| **Persistent Memory** | SQLite stores chat sessions, messages, titles, and serialized citation cards across restarts. |
+| **Context-Aware Retrieval** | The last 6 messages are incorporated into the prompt and recent context is used to improve search queries. |
+| **Batch Embeddings** | Embeddings are processed in batches of 25 to reduce API overhead and support larger PDFs. |
+| **Rate-Limit Handling** | Exponential backoff handles `429 RESOURCE_EXHAUSTED` errors. |
+| **Vector Deduplication** | ChromaDB IDs prevent duplicate document chunks during indexing. |
+| **Model Resilience** | Configured Gemini models provide an automatic fallback chain for temporary service failures. |
+| **Local Privacy** | Uploaded PDFs, vector indexes, chat history, and API keys remain on the local machine. |
+
+---
+
+## 📁 Project Structure
+
+```text
 Personal-RAG-Assistant/
+│
 ├── backend/
-│   ├── main.py              # FastAPI REST endpoints (/chats, /upload, /chat) + CORS
-│   ├── rag_engine.py        # PDF chunking, batch embeddings, ChromaDB search, Gemini RAG
-│   ├── database.py          # SQLite schema & CRUD helpers for persistent chat history
+│   ├── main.py              # FastAPI endpoints and orchestration
+│   ├── rag_engine.py        # PDF processing, embeddings, RAG pipeline
+│   ├── database.py          # SQLite schema and CRUD operations
 │   ├── requirements.txt     # Python dependencies
-│   └── .env                 # Local API key (git-ignored — created during setup)
+│   └── .env                 # Local Gemini API key (git-ignored)
+│
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx          # Multi-chat UI, drag-and-drop uploader, citation cards
-│   │   └── index.css        # Tailwind CSS v4 entry
+│   │   ├── App.jsx          # Main multi-chat application UI
+│   │   └── index.css        # Tailwind CSS entry point
+│   │
 │   ├── package.json         # Node dependencies
-│   └── vite.config.js       # Vite + Tailwind plugin config
-├── .gitignore               # Protects .env, uploads/, chroma_db/, and chat_history.db
+│   └── vite.config.js       # Vite configuration
+│
+├── .gitignore               # Excludes sensitive and generated files
 └── README.md
-
+```
 
 ---
 
-🚀 Complete Local Setup Guide (Step-by-Step)
-Follow these steps to clone and run the full stack locally in under 3 minutes.
+## ⚙️ Installation & Setup
 
-Prerequisites
-Python 3.10+ installed (Download Python)
+Follow these steps to run the application locally.
 
-Node.js 18+ (LTS) installed (Download Node.js)
+### Prerequisites
 
-Git installed
+Make sure you have the following installed:
 
-A free Google Gemini API Key from Google AI Studio
+- **Python 3.10+** — [Download Python](https://www.python.org/downloads/)
+- **Node.js 18+** — [Download Node.js](https://nodejs.org/)
+- **Git** — [Download Git](https://git-scm.com/)
+- **Google Gemini API Key** — [Get a free API key](https://aistudio.google.com/apikey)
 
-Step 1: Clone the Repository
-Open a terminal (PowerShell on Windows, or Terminal on macOS/Linux) and run:
+### 1. Clone the Repository
 
-Bash
-git clone [https://github.com/AmuuLakh/Personal-RAG-Assistant.git](https://github.com/AmuuLakh/Personal-RAG-Assistant.git)
+Open your terminal and run:
+
+```bash
+git clone https://github.com/AmuuLakh/Personal-RAG-Assistant.git
+
 cd Personal-RAG-Assistant
-Step 2: Set Up & Start the Backend (Terminal 1)
-Navigate into the backend folder and create a virtual environment:
+```
 
-Bash
+### 2. Set Up the Backend
+
+Navigate to the backend directory:
+
+```bash
 cd backend
+```
+
+Create a Python virtual environment:
+
+```bash
 python -m venv venv
-Activate the virtual environment:
+```
 
-Windows (PowerShell):
+Activate it:
 
-PowerShell
+**Windows (PowerShell):**
+
+```powershell
 .\venv\Scripts\activate
-macOS / Linux:
+```
 
-Bash
+**macOS / Linux:**
+
+```bash
 source venv/bin/activate
-(You should now see (venv) at the start of your terminal prompt.)
+```
 
-Install the Python dependencies:
+Install dependencies:
 
-Bash
+```bash
 pip install -r requirements.txt
-Create a .env file inside backend/ containing your Gemini API key:
+```
 
-Windows (PowerShell):
+### 3. Configure Your Gemini API Key
 
-PowerShell
+Create a `.env` file inside the `backend/` directory.
+
+**Windows (PowerShell):**
+
+```powershell
 Set-Content -Path .env -Value "GEMINI_API_KEY=your_actual_gemini_api_key_here"
-macOS / Linux:
+```
 
-Bash
+**macOS / Linux:**
+
+```bash
 echo "GEMINI_API_KEY=your_actual_gemini_api_key_here" > .env
-(Replace your_actual_gemini_api_key_here with your real key from Google AI Studio.)
+```
 
-Start the FastAPI server:
+Replace `your_actual_gemini_api_key_here` with your API key from Google AI Studio.
 
-Bash
+> ⚠️ Never commit your `.env` file or expose your API key publicly.
+
+### 4. Start the Backend Server
+
+From inside the `backend/` directory:
+
+```bash
 python -m uvicorn main:app --reload
-Verification: You should see INFO: Application startup complete. and Uvicorn running on http://127.0.0.1:8000. Interactive API docs are available at http://127.0.0.1:8000/docs. Leave this terminal running.
+```
 
-Step 3: Set Up & Start the Frontend (Terminal 2)
-Open a second terminal window and navigate to the frontend folder from the project root:
+If everything is configured correctly, you should see:
 
-Bash
+```text
+INFO: Application startup complete.
+Uvicorn running on http://127.0.0.1:8000
+```
+
+Backend API documentation:
+
+[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
+Keep this terminal running.
+
+### 5. Set Up the Frontend
+
+Open a **second terminal** and navigate to the frontend directory from the project root:
+
+```bash
 cd Personal-RAG-Assistant/frontend
-Install the Node packages:
+```
 
-Bash
+Install the dependencies:
+
+```bash
 npm install
+```
+
 Start the Vite development server:
 
-Bash
+```bash
 npm run dev
-Verification: You should see Local: http://localhost:5173/.
+```
 
-Step 4: Using the App
-Open http://localhost:5173 in your browser.
+You should see:
+
+```text
+Local: http://localhost:5173/
+```
+
+### 6. Launch the Application
+
+Open your browser and visit:
+
+**http://localhost:5173**
+
+Your Personal RAG Assistant is now running locally! 🎉
 
 ---
-📄 License
-This project is open-source and available under the MIT License.
+
+## 🔐 Privacy & Data Storage
+
+This application is designed around local-first data storage.
+
+- Uploaded PDFs are stored locally.
+- ChromaDB vector indexes remain on your machine.
+- SQLite stores conversation history locally.
+- API credentials are stored in a local `.env` file.
+- Sensitive files and generated databases are excluded from Git.
+
+**Note:** Document content sent to external Gemini API services for embedding or generation is subject to Google's API data-handling policies. Local storage does not mean all processing stays offline.
+
+---
+
+## 📄 License
+
+This project is available under the **MIT License**.
+
+---
+
+<p align="center">
+  <strong>Built with ❤️ to make studying smarter, more organized, and more reliable.</strong>
+  <br/>
+  <sub>Personal RAG Assistant — Your course materials. Your knowledge base. Your AI study companion.</sub>
+</p>
