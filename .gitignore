@@ -3,12 +3,13 @@
 **/.env
 *.env
 
-# Python
+# Python & Local Databases
 venv/
 __pycache__/
 *.pyc
 backend/chroma_db/
 backend/uploads/
+backend/chat_history.db
 
 # Node / React
 frontend/node_modules/

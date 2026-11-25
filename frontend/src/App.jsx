@@ -12,15 +12,25 @@ import {
   ChevronUp,
   Loader2,
   GraduationCap,
+  Plus,
+  MessageSquare,
+  Trash2,
 } from "lucide-react";
 
 const API_BASE = "http://127.0.0.1:8000";
 
 const STARTER_PROMPTS = [
-  "Summarize the main topics covered in my uploaded notes.",
-  "What are the key definitions or formulas I should memorize for the exam?",
-  "Create 5 practice quiz questions based strictly on these documents.",
+  "Summarize the main topics covered in this chat's documents.",
+  "What are the key definitions, deadlines, or requirements here?",
+  "Create 5 practice quiz questions based strictly on these PDFs.",
 ];
+
+const WELCOME_MSG = {
+  role: "assistant",
+  content:
+    "This chat has its own isolated knowledge base and conversation memory. Upload 1 or more PDFs on the left—I will answer strictly from this chat's files and remember our follow-up questions.",
+  citations: [],
+};
 
 function CitationCard({ citation }) {
   const [expanded, setExpanded] = useState(false);
@@ -55,15 +65,10 @@ function CitationCard({ citation }) {
 }
 
 export default function App() {
+  const [chats, setChats] = useState([]);
+  const [activeChatId, setActiveChatId] = useState(null);
   const [documents, setDocuments] = useState([]);
-  const [messages, setMessages] = useState([
-    {
-      role: "assistant",
-      content:
-        "Welcome to your **Personal RAG Assistant**. Upload a syllabus, lecture slide deck, or study PDF on the left—then ask me anything about your course material.",
-      citations: [],
-    },
-  ]);
+  const [messages, setMessages] = useState([WELCOME_MSG]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -74,20 +79,71 @@ export default function App() {
   const chatEndRef = useRef(null);
 
   useEffect(() => {
-    fetchDocuments();
+    loadChats();
   }, []);
+
+  useEffect(() => {
+    if (activeChatId) {
+      loadChatDetails(activeChatId);
+      setUploadStatus(null);
+    }
+  }, [activeChatId]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
 
-  async function fetchDocuments() {
+  async function loadChats(selectId = null) {
     try {
-      const res = await fetch(`${API_BASE}/documents`);
+      const res = await fetch(`${API_BASE}/chats`);
+      const data = await res.json();
+      const chatList = data.chats || [];
+      setChats(chatList);
+      if (selectId) {
+        setActiveChatId(selectId);
+      } else if (!activeChatId && chatList.length > 0) {
+        setActiveChatId(chatList[0].id);
+      }
+    } catch (err) {
+      console.error("Failed to load chats:", err);
+    }
+  }
+
+  async function loadChatDetails(chatId) {
+    try {
+      const res = await fetch(`${API_BASE}/chats/${chatId}`);
       const data = await res.json();
       setDocuments(data.documents || []);
+      const savedMsgs = data.messages || [];
+      setMessages(savedMsgs.length > 0 ? savedMsgs : [WELCOME_MSG]);
     } catch (err) {
-      console.error("Failed to fetch documents:", err);
+      console.error("Failed to load chat details:", err);
+    }
+  }
+
+  async function handleCreateNewChat() {
+    try {
+      const res = await fetch(`${API_BASE}/chats`, { method: "POST" });
+      const newChat = await res.json();
+      await loadChats(newChat.id);
+    } catch (err) {
+      console.error("Failed to create chat:", err);
+    }
+  }
+
+  async function handleDeleteChat(e, chatId) {
+    e.stopPropagation();
+    try {
+      await fetch(`${API_BASE}/chats/${chatId}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/chats`);
+      const data = await res.json();
+      const remaining = data.chats || [];
+      setChats(remaining);
+      if (chatId === activeChatId && remaining.length > 0) {
+        setActiveChatId(remaining[0].id);
+      }
+    } catch (err) {
+      console.error("Failed to delete chat:", err);
     }
   }
 
@@ -101,10 +157,21 @@ export default function App() {
     setIsUploading(true);
     setUploadStatus(null);
 
-    const formData = new FormData();
-    formData.append("file", file);
-
     try {
+      // Auto-create a chat session if activeChatId isn't set yet
+      let targetChatId = activeChatId;
+      if (!targetChatId) {
+        const chatRes = await fetch(`${API_BASE}/chats`, { method: "POST" });
+        if (!chatRes.ok) throw new Error("Backend /chats route not found. Make sure main.py is saved and running.");
+        const newChat = await chatRes.json();
+        targetChatId = newChat.id;
+        setActiveChatId(targetChatId);
+      }
+
+      const formData = new FormData();
+      formData.append("chat_id", targetChatId);
+      formData.append("file", file);
+
       const res = await fetch(`${API_BASE}/upload`, {
         method: "POST",
         body: formData,
@@ -117,7 +184,8 @@ export default function App() {
         type: "success",
         text: `Indexed ${data.chunks_indexed} chunks from ${data.filename}`,
       });
-      await fetchDocuments();
+      await loadChatDetails(targetChatId);
+      await loadChats(targetChatId);
     } catch (err) {
       setUploadStatus({ type: "error", text: err.message });
     } finally {
@@ -127,7 +195,7 @@ export default function App() {
 
   async function handleSendMessage(questionText = input) {
     const trimmed = questionText.trim();
-    if (!trimmed || isLoading) return;
+    if (!trimmed || isLoading || !activeChatId) return;
 
     const userMsg = { role: "user", content: trimmed };
     setMessages((prev) => [...prev, userMsg]);
@@ -138,7 +206,7 @@ export default function App() {
       const res = await fetch(`${API_BASE}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: trimmed }),
+        body: JSON.stringify({ chat_id: activeChatId, question: trimmed }),
       });
 
       const data = await res.json();
@@ -157,7 +225,7 @@ export default function App() {
         ...prev,
         {
           role: "assistant",
-          content: `**Error:** ${err.message}. Make sure your FastAPI backend is running on port 8000.`,
+          content: `**Error:** ${err.message}`,
           citations: [],
         },
       ]);
@@ -166,28 +234,74 @@ export default function App() {
     }
   }
 
+  const activeChatTitle =
+    chats.find((c) => c.id === activeChatId)?.title || "Study Session";
+
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 font-sans antialiased">
-      {/* LEFT SIDEBAR: Knowledge Base & Upload */}
-      <aside className="w-80 border-r border-slate-800/80 bg-slate-900/40 flex flex-col justify-between p-5 shrink-0">
-        <div className="space-y-6">
+      {/* LEFT SIDEBAR: Chat Sessions + Isolated PDFs */}
+      <aside className="w-80 border-r border-slate-800/80 bg-slate-900/40 flex flex-col justify-between p-5 shrink-0 overflow-y-auto">
+        <div className="space-y-5">
           {/* Brand Header */}
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-indigo-600/20 border border-indigo-500/30 text-indigo-400">
-              <GraduationCap className="w-6 h-6" />
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-indigo-600/20 border border-indigo-500/30 text-indigo-400">
+                <GraduationCap className="w-5 h-5" />
+              </div>
+              <div>
+                <h1 className="font-semibold text-sm tracking-tight text-white">
+                  Personal RAG Assistant
+                </h1>
+                <p className="text-[11px] text-slate-400">Scoped Chats & Memory</p>
+              </div>
             </div>
-            <div>
-              <h1 className="font-semibold text-base tracking-tight text-white">
-                Personal RAG Assistant
-              </h1>
-              <p className="text-xs text-slate-400">Grounded Study Companion</p>
+
+            <button
+              onClick={handleCreateNewChat}
+              title="Start New Isolated Chat"
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              New
+            </button>
+          </div>
+
+          {/* Saved Chats List */}
+          <div>
+            <span className="block text-[11px] font-medium uppercase tracking-wider text-slate-400 mb-2">
+              Your Study Chats ({chats.length})
+            </span>
+            <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+              {chats.map((chat) => (
+                <div
+                  key={chat.id}
+                  onClick={() => setActiveChatId(chat.id)}
+                  className={`group flex items-center justify-between px-3 py-2 rounded-lg text-xs cursor-pointer transition-colors ${
+                    chat.id === activeChatId
+                      ? "bg-indigo-600/20 border border-indigo-500/40 text-indigo-200 font-medium"
+                      : "hover:bg-slate-800/60 text-slate-300 border border-transparent"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 truncate">
+                    <MessageSquare className="w-3.5 h-3.5 shrink-0 text-indigo-400" />
+                    <span className="truncate">{chat.title}</span>
+                  </div>
+                  <button
+                    onClick={(e) => handleDeleteChat(e, chat.id)}
+                    title="Delete chat & its documents"
+                    className="opacity-0 group-hover:opacity-100 p-1 hover:text-rose-400 transition-opacity"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
 
-          {/* Drag & Drop Upload Box */}
-          <div>
-            <label className="block text-xs font-medium uppercase tracking-wider text-slate-400 mb-2">
-              Upload Course Material
+          {/* Drag & Drop Upload Box (Scoped to Active Chat) */}
+          <div className="pt-2 border-t border-slate-800/80">
+            <label className="block text-[11px] font-medium uppercase tracking-wider text-slate-400 mb-2">
+              Upload PDFs to "{activeChatTitle}"
             </label>
             <div
               onDragOver={(e) => {
@@ -202,7 +316,7 @@ export default function App() {
                 handleFileUpload(file);
               }}
               onClick={() => fileInputRef.current?.click()}
-              className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all ${
+              className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-all ${
                 isDragging
                   ? "border-indigo-400 bg-indigo-500/10"
                   : "border-slate-700/80 hover:border-indigo-500/60 hover:bg-slate-800/40"
@@ -213,21 +327,24 @@ export default function App() {
                 type="file"
                 accept=".pdf"
                 className="hidden"
-                onChange={(e) => handleFileUpload(e.target.files[0])}
+                onChange={(e) => {
+                  handleFileUpload(e.target.files[0]);
+                  e.target.value = "";
+                }}
               />
               {isUploading ? (
-                <div className="flex flex-col items-center gap-2 py-2">
-                  <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
-                  <p className="text-xs text-slate-300">Chunking & embedding PDF...</p>
+                <div className="flex flex-col items-center gap-1.5 py-1">
+                  <Loader2 className="w-5 h-5 text-indigo-400 animate-spin" />
+                  <p className="text-xs text-slate-300">Indexing for this chat...</p>
                 </div>
               ) : (
-                <div className="flex flex-col items-center gap-2">
-                  <UploadCloud className="w-7 h-7 text-indigo-400" />
+                <div className="flex flex-col items-center gap-1.5">
+                  <UploadCloud className="w-6 h-6 text-indigo-400" />
                   <p className="text-xs font-medium text-slate-200">
-                    Drop PDF here or <span className="text-indigo-400 underline">browse</span>
+                    Drop PDF or <span className="text-indigo-400 underline">browse</span>
                   </p>
                   <p className="text-[11px] text-slate-500">
-                    Syllabi, lecture slides, or study notes
+                    Isolated to this chat only
                   </p>
                 </div>
               )}
@@ -235,7 +352,7 @@ export default function App() {
 
             {uploadStatus && (
               <div
-                className={`mt-3 flex items-start gap-2 p-2.5 rounded-lg text-xs border ${
+                className={`mt-2.5 flex items-start gap-2 p-2 rounded-lg text-xs border ${
                   uploadStatus.type === "success"
                     ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
                     : "bg-rose-500/10 border-rose-500/30 text-rose-300"
@@ -251,27 +368,27 @@ export default function App() {
             )}
           </div>
 
-          {/* Indexed Documents List */}
+          {/* Documents Attached to Active Chat */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
-                Indexed Notes ({documents.length})
+              <span className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
+                Files in This Chat ({documents.length})
               </span>
               <BookOpen className="w-3.5 h-3.5 text-slate-500" />
             </div>
 
             {documents.length === 0 ? (
-              <p className="text-xs text-slate-500 italic py-3 px-3 rounded-lg bg-slate-900/60 border border-slate-800/60">
-                No PDFs indexed yet. Upload a document above to start asking questions.
+              <p className="text-xs text-slate-500 italic py-2.5 px-3 rounded-lg bg-slate-900/60 border border-slate-800/60">
+                No PDFs in this chat yet.
               </p>
             ) : (
-              <ul className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+              <ul className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
                 {documents.map((doc) => (
                   <li
                     key={doc}
-                    className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-slate-800/50 border border-slate-700/50 text-xs text-slate-200"
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-800/50 border border-slate-700/50 text-xs text-slate-200"
                   >
-                    <FileText className="w-4 h-4 text-indigo-400 shrink-0" />
+                    <FileText className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                     <span className="truncate" title={doc}>
                       {doc}
                     </span>
@@ -283,26 +400,24 @@ export default function App() {
         </div>
 
         {/* Footer Badge */}
-        <div className="pt-4 border-t border-slate-800/80 text-[11px] text-slate-500 flex items-center justify-between">
-          <span>FastAPI + ChromaDB</span>
-          <span className="text-indigo-400 font-medium">Gemini RAG</span>
+        <div className="pt-4 mt-4 border-t border-slate-800/80 text-[11px] text-slate-500 flex items-center justify-between">
+          <span>SQLite + ChromaDB</span>
+          <span className="text-indigo-400 font-medium">Memory Active</span>
         </div>
       </aside>
 
       {/* MAIN CHAT PANEL */}
       <main className="flex-1 flex flex-col min-w-0">
-        {/* Top Bar */}
         <header className="h-14 border-b border-slate-800/80 px-6 flex items-center justify-between bg-slate-950/80 backdrop-blur">
-          <div className="flex items-center gap-2 text-sm text-slate-300">
-            <Sparkles className="w-4 h-4 text-indigo-400" />
-            <span>Answers strictly grounded in your uploaded documents</span>
+          <div className="flex items-center gap-2 text-sm text-slate-200 font-medium truncate">
+            <Sparkles className="w-4 h-4 text-indigo-400 shrink-0" />
+            <span className="truncate">{activeChatTitle}</span>
           </div>
-          <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-            ● Citations Enabled
+          <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+            ● {documents.length} PDF{documents.length === 1 ? "" : "s"} Scoped
           </span>
         </header>
 
-        {/* Messages Feed */}
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
           <div className="max-w-3xl mx-auto space-y-6">
             {messages.map((msg, idx) => (
@@ -321,7 +436,6 @@ export default function App() {
                     <ReactMarkdown>{msg.content}</ReactMarkdown>
                   </div>
 
-                  {/* Source Citations */}
                   {msg.citations && msg.citations.length > 0 && (
                     <div className="mt-4 pt-3 border-t border-slate-800/90 space-y-2">
                       <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
@@ -342,7 +456,7 @@ export default function App() {
               <div className="flex justify-start">
                 <div className="bg-slate-900 border border-slate-800 rounded-2xl px-5 py-3.5 flex items-center gap-2.5 text-sm text-slate-400">
                   <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />
-                  <span>Searching your notes and verifying citations...</span>
+                  <span>Searching this chat's PDFs & checking conversation context...</span>
                 </div>
               </div>
             )}
@@ -351,7 +465,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Starter Chips + Input Box */}
         <div className="border-t border-slate-800/80 bg-slate-950 px-6 py-4">
           <div className="max-w-3xl mx-auto space-y-3">
             {messages.length === 1 && (
@@ -379,7 +492,7 @@ export default function App() {
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask a question about your uploaded notes..."
+                placeholder={`Ask a follow-up or question about "${activeChatTitle}"...`}
                 className="flex-1 bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none"
               />
               <button
