@@ -38,8 +38,7 @@ Generic AI chatbots frequently hallucinate, mix up context across unrelated subj
 │  • Auto Model Fallback  │                              │  • messages table (role, content, cites) │
 └─────────────────────────┘                              └──────────────────────────────────────────┘
 
-
-
+---
 
 📁 Project Structure
 
@@ -60,7 +59,7 @@ Personal-RAG-Assistant/
 └── README.md
 
 
-
+---
 
 🚀 Complete Local Setup Guide (Step-by-Step)
 Follow these steps to clone and run the full stack locally in under 3 minutes.
@@ -137,3 +136,7 @@ Verification: You should see Local: http://localhost:5173/.
 
 Step 4: Using the App
 Open http://localhost:5173 in your browser.
+
+---
+📄 License
+This project is open-source and available under the MIT License.
